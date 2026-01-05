@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gaussian Noise Visualization</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            min-height: 100vh;
+            margin: 0;
+        }
+        h1 {
+            margin-bottom: 10px;
+        }
+        .explanation {
+            background: #16213e;
+            padding: 20px 30px;
+            border-radius: 12px;
+            margin-bottom: 25px;
+            max-width: 700px;
+            text-align: left;
+        }
+        .formula {
+            font-family: 'Times New Roman', serif;
+            font-size: 1.4em;
+            text-align: center;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #0f3460;
+            border-radius: 8px;
+        }
+        .formula-breakdown {
+            font-size: 0.95em;
+            line-height: 1.6;
+        }
+        .formula-breakdown ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .formula-breakdown li {
+            margin: 5px 0;
+        }
+        .formula-breakdown p {
+            margin: 10px 0;
+        }
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        input[type="range"] {
+            width: 300px;
+            height: 8px;
+        }
+        input[type="file"] {
+            background: #0f3460;
+            padding: 10px;
+            border-radius: 8px;
+            border: none;
+            color: white;
+            cursor: pointer;
+        }
+        .t-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            min-width: 100px;
+        }
+        #pixelGrid {
+            display: grid;
+            gap: 1px;
+            background: #333;
+            padding: 1px;
+            border-radius: 4px;
+        }
+        .pixel {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 8px;
+            font-weight: bold;
+            line-height: 1.1;
+            width: 32px;
+            height: 32px;
+        }
+        .pixel span {
+            font-size: 7px;
+        }
+        .info {
+            margin-top: 20px;
+            text-align: center;
+            opacity: 0.7;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <h1>Forward Diffusion: Adding Gaussian Noise</h1>
+
+    <div class="explanation">
+        <div class="formula">x<sub>noisy</sub> = (1 - t) · x + t · z</div>
+        <div class="formula-breakdown">
+            <p><strong>Where:</strong></p>
+            <ul>
+                <li><strong>x</strong> = original image (each pixel is an RGB vector, values in [0, 1])</li>
+                <li><strong>z ~ N(0, I)</strong> = Gaussian noise (each pixel gets 3 independent random values from a standard normal distribution)</li>
+                <li><strong>t</strong> = time step (0 = original image, 1 = pure noise)</li>
+            </ul>
+            <p><strong>Intuition:</strong> As t increases from 0 to 1, we linearly interpolate from the original image to pure random noise.
+            At t=1, all information about the original image is destroyed — it becomes indistinguishable from random static.</p>
+            <p><strong>Why this matters:</strong> Diffusion models learn to <em>reverse</em> this process.
+            They're trained to predict and remove the noise, so they can generate images by starting from pure noise (t=1) and gradually denoising back to t=0.</p>
+        </div>
+    </div>
+
+    <div class="controls">
+        <input type="file" id="imageInput" accept="image/*">
+        <span>Size:</span>
+        <input type="range" id="sizeSlider" min="8" max="64" value="20">
+        <span id="sizeValue">20×20</span>
+    </div>
+
+    <div class="controls">
+        <span>t = </span>
+        <input type="range" id="tSlider" min="0" max="1" step="0.01" value="0">
+        <span class="t-value" id="tValue">0.00</span>
+    </div>
+
+    <div id="pixelGrid"></div>
+
+    <div class="info">
+        Each pixel shows R, G, B values.<br>
+        At t=0: original image | At t=1: pure Gaussian noise
+    </div>
+
+    <script>
+        let originalPixels = null;
+        let noisePixels = null;
+        let gridSize = 20;
+
+        // Generate Gaussian random number using Box-Muller transform
+        function gaussianRandom() {
+            let u1 = Math.random();
+            let u2 = Math.random();
+            return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+        }
+
+        // Generate noise array for image
+        function generateNoise(width, height) {
+            const noise = [];
+            for (let i = 0; i < height; i++) {
+                const row = [];
+                for (let j = 0; j < width; j++) {
+                    row.push([gaussianRandom(), gaussianRandom(), gaussianRandom()]);
+                }
+                noise.push(row);
+            }
+            return noise;
+        }
+
+        // Load and resize image
+        function loadImage(file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    const canvas = document.createElement('canvas');
+                    const size = gridSize;
+                    const aspect = img.height / img.width;
+                    const width = size;
+                    const height = Math.round(size * aspect);
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    const imageData = ctx.getImageData(0, 0, width, height);
+                    originalPixels = [];
+
+                    for (let i = 0; i < height; i++) {
+                        const row = [];
+                        for (let j = 0; j < width; j++) {
+                            const idx = (i * width + j) * 4;
+                            row.push([
+                                imageData.data[idx] / 255,
+                                imageData.data[idx + 1] / 255,
+                                imageData.data[idx + 2] / 255
+                            ]);
+                        }
+                        originalPixels.push(row);
+                    }
+
+                    noisePixels = generateNoise(width, height);
+                    updateGrid();
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // Create sample gradient image
+        function createSampleImage() {
+            const size = gridSize;
+            const height = Math.round(size * 1.3);
+            originalPixels = [];
+
+            for (let i = 0; i < height; i++) {
+                const row = [];
+                for (let j = 0; j < size; j++) {
+                    const r = j / (size - 1);
+                    const g = i / (height - 1);
+                    const b = 1 - (r + g) / 2;
+                    row.push([r, g, b]);
+                }
+                originalPixels.push(row);
+            }
+
+            noisePixels = generateNoise(size, height);
+            updateGrid();
+        }
+
+        // Update the pixel grid display
+        function updateGrid() {
+            if (!originalPixels) return;
+
+            const t = parseFloat(document.getElementById('tSlider').value);
+            document.getElementById('tValue').textContent = t.toFixed(2);
+
+            const grid = document.getElementById('pixelGrid');
+            const height = originalPixels.length;
+            const width = originalPixels[0].length;
+
+            grid.style.gridTemplateColumns = `repeat(${width}, 32px)`;
+            grid.innerHTML = '';
+
+            for (let i = 0; i < height; i++) {
+                for (let j = 0; j < width; j++) {
+                    const [r, g, b] = originalPixels[i][j];
+                    const [nr, ng, nb] = noisePixels[i][j];
+
+                    // Apply noise formula: (1-t)*image + t*noise
+                    const noisyR = (1 - t) * r + t * nr;
+                    const noisyG = (1 - t) * g + t * ng;
+                    const noisyB = (1 - t) * b + t * nb;
+
+                    // Clip for display color
+                    const displayR = Math.max(0, Math.min(1, noisyR));
+                    const displayG = Math.max(0, Math.min(1, noisyG));
+                    const displayB = Math.max(0, Math.min(1, noisyB));
+
+                    // Choose text color based on brightness
+                    const brightness = (displayR + displayG + displayB) / 3;
+                    const textColor = brightness < 0.5 ? 'white' : 'black';
+
+                    const pixel = document.createElement('div');
+                    pixel.className = 'pixel';
+                    pixel.style.backgroundColor = `rgb(${displayR*255}, ${displayG*255}, ${displayB*255})`;
+                    pixel.style.color = textColor;
+                    pixel.innerHTML = `<span>${noisyR.toFixed(1)}</span><span>${noisyG.toFixed(1)}</span><span>${noisyB.toFixed(1)}</span>`;
+
+                    grid.appendChild(pixel);
+                }
+            }
+        }
+
+        // Event listeners
+        document.getElementById('tSlider').addEventListener('input', updateGrid);
+
+        document.getElementById('imageInput').addEventListener('change', function(e) {
+            if (e.target.files[0]) {
+                loadImage(e.target.files[0]);
+            }
+        });
+
+        document.getElementById('sizeSlider').addEventListener('input', function(e) {
+            gridSize = parseInt(e.target.value);
+            document.getElementById('sizeValue').textContent = `${gridSize}×${gridSize}`;
+            if (originalPixels) {
+                // Reload with new size if we have an image
+                const fileInput = document.getElementById('imageInput');
+                if (fileInput.files[0]) {
+                    loadImage(fileInput.files[0]);
+                } else {
+                    createSampleImage();
+                }
+            }
+        });
+
+        // Initialize with sample image
+        createSampleImage();
+    </script>
+</body>
+</html>
